@@ -242,7 +242,11 @@ def run_session(rows: int, cols: int, min_dist: int, candidates: list[dict]) -> 
     返回 (session_status, assignments, unplaced)：
     - 有关键考生 → closed，全员落座，unplaced 必为 []；做不到抛 SeatingClosedError；
     - 无关键考生 → open，允许现网未排。
+    只按 candidates 当次的 is_key 判定，不读任何旧方案结论。
     """
+    if any(c.get("is_key") for c in candidates):
+        assigns = place_all_closed(rows, cols, min_dist, candidates)
+        return SESSION_CLOSED, assigns, []
     assigns, unplaced = place_candidates(rows, cols, min_dist, candidates)
     return SESSION_OPEN, assigns, unplaced
 

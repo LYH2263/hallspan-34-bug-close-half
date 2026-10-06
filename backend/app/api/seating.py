@@ -10,7 +10,6 @@ from app.services.seat_engine import (
     CLOSED_MUST_SEAT_ALL,
     SeatingClosedError,
     find_violations,
-    place_candidates,
     plan_to_dict,
     run_session,
 )
@@ -53,9 +52,9 @@ def run_seating(hall_id: int = 1, db: Session = Depends(get_db)):
         session_status, assigns, unplaced = run_session(
             hall.rows, hall.cols, hall.min_manhattan, cands
         )
-    except SeatingClosedError:
-        assigns, unplaced = place_candidates(hall.rows, hall.cols, hall.min_manhattan, cands)
-        session_status = SESSION_OPEN
+    except SeatingClosedError as e:
+        # 封闭场做不到全员落座：整场失败，不增方案行；失败说明只有封闭场规则本身。
+        raise HTTPException(422, e.message)
     viols = find_violations(hall.rows, hall.cols, hall.min_manhattan, assigns)
     result = plan_to_dict(assigns, unplaced, viols, hall.rows, hall.cols, session_status)
     result["hall"] = {"id": hall.id, "name": hall.name, "min_manhattan": hall.min_manhattan}
@@ -82,7 +81,8 @@ def latest(hall_id: int = 1, db: Session = Depends(get_db)):
     data = json.loads(plan.result_json)
     out = {"id": plan.id, "session_status": plan.session_status, **data}
     out["current_status"] = current_status
-    out["stale"] = False
+    # 快照状态与当前标记推导状态不一致即过期：禁止前端直接吃旧图。
+    out["stale"] = plan.session_status != current_status
     return out
 
 @router.get("/violations")
