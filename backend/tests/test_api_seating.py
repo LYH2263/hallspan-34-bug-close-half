@@ -115,6 +115,22 @@ def test_states_are_mutex_and_stats_reflect_state(client):
     # 违规接口在封闭场不暴露未排入口。
     v = client.get("/api/seating/violations?hall_id=2").json()
     assert v["session_status"] == "closed" and v["unplaced"] == []
+    # 统计接口返回快照里的真实数字，不按空格位虚构，也不带页侧拆分字段。
+    st = client.get("/api/seating/stats?hall_id=2").json()
+    assert st["session_status"] == "closed"
+    assert st["seated"] == 10 and st["unplaced"] == 0
+    assert "page_split" not in st and "page_job" not in st
+
+
+def test_open_stats_reflect_real_unplaced_count(client):
+    for c in client.get("/api/candidates").json():
+        if c["hall_id"] == 1 and c["is_key"]:
+            client.patch(f"/api/candidates/{c['id']}", json={"is_key": False})
+    client.post("/api/seating/run?hall_id=1")
+    st = client.get("/api/seating/stats?hall_id=1").json()
+    assert st["session_status"] == "open"
+    assert st["seated"] == 10 and st["unplaced"] == 2
+    assert "page_split" not in st
 
 
 def test_missing_hall_message_is_separate_from_closed_rule(client):

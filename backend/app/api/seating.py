@@ -1,20 +1,17 @@
 import json
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.models import Candidate, Hall, SeatPlan, SESSION_CLOSED, SESSION_OPEN
 from app.services.seat_engine import (
-    CLOSED_MUST_SEAT_ALL,
     SeatingClosedError,
     find_violations,
-    place_candidates,
     plan_to_dict,
     run_session,
 )
-from app.services.page_rollup import mix_stats, mix_violations
+
 router = APIRouter(prefix="/seating", tags=["seating"])
 
 def _load_candidates(db: Session, hall_id: int) -> list[dict]:
@@ -53,9 +50,9 @@ def run_seating(hall_id: int = 1, db: Session = Depends(get_db)):
         session_status, assigns, unplaced = run_session(
             hall.rows, hall.cols, hall.min_manhattan, cands
         )
-    except SeatingClosedError:
-        assigns, unplaced = place_candidates(hall.rows, hall.cols, hall.min_manhattan, cands)
-        session_status = SESSION_OPEN
+    except SeatingClosedError as exc:
+        # 封闭场做不到全员落座：整场失败、不新增方案行；失败文案只有封闭场规则本身。
+        raise HTTPException(status_code=422, detail=exc.message)
     viols = find_violations(hall.rows, hall.cols, hall.min_manhattan, assigns)
     result = plan_to_dict(assigns, unplaced, viols, hall.rows, hall.cols, session_status)
     result["hall"] = {"id": hall.id, "name": hall.name, "min_manhattan": hall.min_manhattan}
@@ -80,9 +77,12 @@ def latest(hall_id: int = 1, db: Session = Depends(get_db)):
         data["stale"] = False
         return data
     data = json.loads(plan.result_json)
-    out = {"id": plan.id, "session_status": plan.session_status, **data}
+    out = {"id": plan.id, **data}
+    # 快照状态以方案列为准（data 里的同名键可能来自更旧的序列化结构）。
+    out["session_status"] = plan.session_status
     out["current_status"] = current_status
-    out["stale"] = False
+    # 快照状态与当前名单推导出的状态不同即为过期，禁止前端直接吃旧图。
+    out["stale"] = plan.session_status != current_status
     return out
 
 @router.get("/violations")
@@ -96,5 +96,8 @@ def violations(hall_id: int = 1, db: Session = Depends(get_db)):
 
 @router.get("/stats")
 def stats(hall_id: int = 1, db: Session = Depends(get_db)):
+    # 直接返回最新快照里的真实统计，不按空格位虚构已排/未排/违规数。
     data = latest(hall_id=hall_id, db=db)
-    return {"hall_id": hall_id, **mix_stats(data)}
+    return {"hall_id": hall_id, **data["stats"],
+            "current_status": data.get("current_status"),
+            "stale": data.get("stale", False)}
